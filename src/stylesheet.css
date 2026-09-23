@@ -245,6 +245,14 @@
   color: #eeeeee;
 }
 
+/* Stands in for the usage bar when the driver reports no utilisation */
+.smp-gpu-note {
+  font-size: 9.5px;
+  color: #888888;
+  max-width: 500px;
+  padding: 1px 0;
+}
+
 /* --- Memory Detail Rows --- */
 
 .smp-detail-row {

@@ -69,6 +69,7 @@ pack: schemas
 	rm -f $(ZIP)
 	gnome-extensions pack $(SRC) \
 		--extra-source=icons \
+		--extra-source=panelMetrics.js \
 		--extra-source="$(CURDIR)/LICENSE" \
 		--schema=schemas/org.gnome.shell.extensions.system-monitor-panel.gschema.xml \
 		--force

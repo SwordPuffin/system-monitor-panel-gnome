@@ -19,6 +19,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import { PANEL_METRICS, sanitizePanelOrder } from './panelMetrics.js';
+
 
 /* ── Helpers ──────────────────────────────────── */
 
@@ -368,6 +370,8 @@ const TEMP_FRIENDLY_NAMES = {
     'amdgpu': 'GPU',
     'radeon': 'GPU',
     'nouveau': 'GPU',
+    'i915': 'GPU',
+    'xe': 'GPU',
 };
 
 function friendlyTempName(raw) {
@@ -379,6 +383,14 @@ function friendlyTempName(raw) {
  * exposes k10temp (or zenpower with the out-of-tree driver).
  */
 const CPU_HWMON_CHIPS = new Set(['coretemp', 'k10temp', 'zenpower']);
+
+/**
+ * hwmon chips that report a GPU temperature. Intel's i915 and xe drivers
+ * register a chip on the card's PCI device just as amdgpu and nouveau do, so
+ * a discrete Intel card (Arc) belongs on the temperature card next to them.
+ */
+const GPU_HWMON_CHIPS = new Set(
+    ['amdgpu', 'radeon', 'nouveau', 'i915', 'xe']);
 
 /**
  * Return true if a sensor id/name is the whole-CPU (package) sensor.
@@ -407,7 +419,7 @@ function tempSensorCategory(raw) {
         return 'wifi';
     if (raw === 'Composite' || raw === 'drivetemp')
         return 'drive';
-    if (raw === 'amdgpu' || raw === 'radeon' || raw === 'nouveau')
+    if (GPU_HWMON_CHIPS.has(raw))
         return 'gpu';
     return null;
 }
@@ -423,6 +435,16 @@ const GPU_VENDOR_NAMES = {
     '1002': 'AMD',
     '10de': 'NVIDIA',
 };
+
+/**
+ * hwmon temperature channel labels a GPU may publish, best first.
+ *
+ * A card can expose several: the die/package reading is what "GPU
+ * temperature" means to a user, while VRAM, hotspot/junction and
+ * voltage-regulator channels sit tens of degrees above it and would
+ * misrepresent the card.
+ */
+const GPU_TEMP_LABELS = ['pkg', 'package', 'edge', 'gpu', 'die', 'core'];
 
 /**
  * Distro-dependent locations of the PCI id database.
@@ -478,6 +500,26 @@ function friendlyGpuName(pciName, vendor) {
     if (vendor && !name.toLowerCase().startsWith(vendor.toLowerCase()))
         return `${vendor} ${name}`;
     return name;
+}
+
+
+/**
+ * Why a GPU reading carries no usage percentage, or null when it does — and
+ * null too while an idle-residency device is still one sample short, since
+ * that resolves itself on the next refresh.
+ *
+ * A bare "N/A" reads as a bug in the extension. Naming the driver that cannot
+ * answer, and what would answer instead, is the difference between a dead end
+ * and something the user can act on.
+ */
+function gpuUsageNote(gpu) {
+    if (gpu.busy !== null || gpu.usageSupported)
+        return null;
+    if (gpu.nvidiaSmiMissing)
+        return 'Usage needs nvidia-smi — install the NVIDIA driver utilities';
+    if (gpu.driver === 'nouveau')
+        return 'The open-source nouveau driver does not report GPU usage';
+    return `The ${gpu.driver} driver does not report GPU usage`;
 }
 
 
@@ -987,6 +1029,49 @@ class SystemMetrics {
     }
 
     /**
+     * Pick the die-temperature file out of one GPU hwmon chip, or null when
+     * the chip reports no temperature at all.
+     *
+     * hwmon names a temperature channel `temp<n+1>_input`, and a driver is
+     * free to leave low channels unimplemented. Intel's xe driver reserves
+     * channel 0 for the card and publishes the package temperature as
+     * temp2_input with VRAM on temp3_input, so an Arc card has no
+     * temp1_input whatsoever — probing that one fixed name found nothing on
+     * every discrete Intel GPU, and only landed on amdgpu's edge sensor by
+     * luck of numbering.
+     *
+     * Channels are ranked by their label so the die reading wins wherever the
+     * driver happens to put it; an unlabelled channel (nouveau) outranks a
+     * labelled non-die one (amdgpu's junction, xe's vram), and ties go to the
+     * lower channel.
+     */
+    async _findGpuTempPath(hwmonBase) {
+        let bestPath = null;
+        let bestRank = Infinity;
+
+        for (let i = 1; i <= 8; i++) {
+            const path = `${hwmonBase}/temp${i}_input`;
+            if ((await readFile(path)) === null)
+                continue;
+
+            const labelStr = await readFile(`${hwmonBase}/temp${i}_label`);
+            const label = labelStr ? labelStr.trim().toLowerCase() : '';
+            const known = GPU_TEMP_LABELS.indexOf(label);
+            const rank = known !== -1 ? known
+                : GPU_TEMP_LABELS.length + (label === '' ? 0 : 1);
+
+            if (rank < bestRank) {
+                bestRank = rank;
+                bestPath = path;
+                if (rank === 0)
+                    break; // nothing can outrank the package sensor
+            }
+        }
+
+        return bestPath;
+    }
+
+    /**
      * Locate every GPU under /sys/class/drm and work out, per device, which
      * files (if any) report usage, VRAM, temperature and clock frequency.
      * Returns [{ card, name, integrated, driver, busyPath, idlePath,
@@ -1113,14 +1198,21 @@ class SystemMetrics {
             // iGPUs expose none — their die shares the CPU package sensor.
             for (const hwmonName of listSysDir(`${base}/device/hwmon`)) {
                 const hwmonBase = `${base}/device/hwmon/${hwmonName}`;
-                gpu.tempPath ??= await this._firstReadable(
-                    [`${hwmonBase}/temp1_input`]);
+                gpu.tempPath ??= await this._findGpuTempPath(hwmonBase);
                 if (!gpu.freqPath &&
                     (await readFile(`${hwmonBase}/freq1_input`)) !== null) {
                     gpu.freqPath = `${hwmonBase}/freq1_input`;
                     gpu.freqDivisor = 1e6; // Hz → MHz
                 }
             }
+
+            // Utilisation is the one metric with no shared interface, so
+            // whether a device can ever report it is a property of the driver,
+            // not of the moment: nouveau publishes nothing, and the
+            // proprietary NVIDIA driver only answers through nvidia-smi. A
+            // static answer lets the UI say so instead of blinking "N/A".
+            gpu.usageSupported =
+                !!(gpu.busyPath || gpu.idlePath || gpu.useNvidiaSmi);
 
             gpus.push(gpu);
         }
@@ -1141,10 +1233,11 @@ class SystemMetrics {
      * each refresh only reads the handful of per-GPU metric files (plus one
      * nvidia-smi call when the proprietary driver is present).
      *
-     * Returns [{ name, integrated, busy, vramUsed, vramTotal, vramPercent,
-     * tempC, freqMhz, freqMaxMhz }] with null for anything the hardware or
-     * driver does not report. busy is also null on the first sample of an
-     * idle-residency GPU — a delta needs two reads.
+     * Returns [{ name, integrated, driver, usageSupported, nvidiaSmiMissing,
+     * busy, vramUsed, vramTotal, vramPercent, tempC, freqMhz, freqMaxMhz }]
+     * with null for anything the hardware or driver does not report. busy is
+     * also null on the first sample of an idle-residency GPU — a delta needs
+     * two reads.
      */
     async getGpuUsage(cancellable = null) {
         this._gpus ??= this._discoverGpus();
@@ -1157,6 +1250,9 @@ class SystemMetrics {
             const result = {
                 name: gpu.name,
                 integrated: gpu.integrated,
+                driver: gpu.driver,
+                usageSupported: gpu.usageSupported,
+                nvidiaSmiMissing: gpu.driver === 'nvidia' && !gpu.useNvidiaSmi,
                 busy: null,
                 vramUsed: null,
                 vramTotal: null,
@@ -1518,6 +1614,14 @@ class GpuCardItem extends PopupMenu.PopupBaseMenuItem {
                 ? `${gpu.busy.toFixed(0)}%` : 'N/A';
             setBarWidth(row.barFill, gpu.busy ?? 0, 500);
 
+            // An empty bar next to "N/A" looks like an idle GPU; say why the
+            // number is missing instead.
+            const note = gpuUsageNote(gpu);
+            row.bar.visible = note === null;
+            row.note.visible = note !== null;
+            if (note !== null)
+                row.note.text = note;
+
             // Detail rows only appear when the driver reports the metric, so
             // an iGPU is not a column of dashes.
             const hasVram = gpu.vramTotal !== null;
@@ -1579,12 +1683,20 @@ class GpuCardItem extends PopupMenu.PopupBaseMenuItem {
         barBg.add_child(barFill);
         entry.add_child(barBg);
 
+        const note = new St.Label({style_class: 'smp-gpu-note'});
+        note.clutter_text.line_wrap = true;
+        note.visible = false;
+        entry.add_child(note);
+
         const vram = addStatRow(entry, 'VRAM', '—');
         const freq = addStatRow(entry, 'Frequency', '—');
         const temp = addStatRow(entry, 'Temperature', '—');
 
         this.gpusContainer.add_child(entry);
-        return {root: entry, name, badge, percent, barFill, vram, freq, temp};
+        return {
+            root: entry, name, badge, percent, bar: barBg, barFill, note,
+            vram, freq, temp,
+        };
     }
 });
 
@@ -2105,9 +2217,11 @@ class SystemMonitorIndicator extends PanelMenu.Button {
         // never touch a torn-down indicator.
         this._cancellable = new Gio.Cancellable();
         this._diskQueryPending = false;
+        this._gpuQueryPending = false;
 
-        // Set once a refresh learns the machine exposes no GPU at all; keeps
-        // the panel from pinning a permanent "N/A" slot on such machines.
+        // Set once a refresh learns no GPU here can report a usage figure —
+        // either none is present, or none has a driver that publishes one.
+        // Keeps the panel from pinning a permanent "N/A" slot on such machines.
         this._gpuUnavailable = false;
 
         // ── Build panel layout ──
@@ -2118,29 +2232,23 @@ class SystemMonitorIndicator extends PanelMenu.Button {
         });
         this.add_child(this._panelBox);
 
-        this._cpuBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-cpu-symbolic.svg`), '—');
-        this._panelBox.add_child(this._cpuBox.container);
+        // Keyed by metric id so the configured order can address a slot by
+        // name; each metric's icon file is named after the same id. Built in
+        // default order, then rearranged by _applyPanelOrder().
+        this._panelBoxes = new Map();
+        for (const {id} of PANEL_METRICS) {
+            const box = this._createMetricBox(Gio.icon_new_for_string(
+                `${extension.path}/icons/smp-${id}-symbolic.svg`), '—');
+            this._panelBoxes.set(id, box);
+            this._panelBox.add_child(box.container);
+        }
 
-        this._gpuBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-gpu-symbolic.svg`), '—');
-        this._panelBox.add_child(this._gpuBox.container);
-
-        this._memBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-memory-symbolic.svg`), '—');
-        this._panelBox.add_child(this._memBox.container);
-
-        this._diskBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-disk-symbolic.svg`), '—');
-        this._panelBox.add_child(this._diskBox.container);
-
-        this._tempBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-temperature-symbolic.svg`), '—');
-        this._panelBox.add_child(this._tempBox.container);
-
-        this._netBox = this._createMetricBox(
-            Gio.icon_new_for_string(`${extension.path}/icons/smp-network-symbolic.svg`), '—');
-        this._panelBox.add_child(this._netBox.container);
+        this._cpuBox = this._panelBoxes.get('cpu');
+        this._gpuBox = this._panelBoxes.get('gpu');
+        this._memBox = this._panelBoxes.get('memory');
+        this._diskBox = this._panelBoxes.get('disk');
+        this._tempBox = this._panelBoxes.get('temperature');
+        this._netBox = this._panelBoxes.get('network');
 
         // ── Build dropdown ──
         this._buildDropdownMenu();
@@ -2280,12 +2388,29 @@ class SystemMonitorIndicator extends PanelMenu.Button {
         // Hide each shared row entirely when neither of its cards is shown.
         this._memDiskRow.visible = showMemCard || showDiskCard;
         this._tempNetRow.visible = showTempCard || showNetCard;
+
+        this._applyPanelOrder();
+    }
+
+    /**
+     * Arrange the panel's metric slots left to right per `panel-order`.
+     *
+     * Moving each slot to its target index in ascending order is enough to
+     * sort the box: once the first n slots hold the right actors, moving the
+     * next one into index n cannot disturb any of them.
+     */
+    _applyPanelOrder() {
+        const order = sanitizePanelOrder(this._settings.get_strv('panel-order'));
+        order.forEach((id, index) => {
+            this._panelBox.set_child_at_index(
+                this._panelBoxes.get(id).container, index);
+        });
     }
 
     _startTimer() {
         // Guard against leaking an existing source if called twice.
         this._stopTimer();
-        const interval = Math.max(5, this._settings.get_int('refresh-interval'));
+        const interval = Math.max(2, this._settings.get_int('refresh-interval'));
         this._timerId = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT,
             interval,
@@ -2357,15 +2482,33 @@ class SystemMonitorIndicator extends PanelMenu.Button {
     }
 
     async _refreshGpu() {
-        const isFahrenheit = this._settings.get_string('temperature-unit') === 'fahrenheit';
+        // An NVIDIA card costs one nvidia-smi process per refresh, and that
+        // tool initialises NVML — and may wake a sleeping dGPU — before it
+        // answers. A tick can therefore land while the previous query is still
+        // running once the interval is short, so skip it rather than stack
+        // subprocesses on top of each other.
+        if (this._gpuQueryPending)
+            return;
 
-        const gpus = await this._metrics.getGpuUsage(this._cancellable);
+        const isFahrenheit = this._settings.get_string('temperature-unit') === 'fahrenheit';
+        this._gpuQueryPending = true;
+
+        let gpus;
+        try {
+            gpus = await this._metrics.getGpuUsage(this._cancellable);
+        } finally {
+            this._gpuQueryPending = false;
+        }
         if (!this._cancellable || this._cancellable.is_cancelled())
             return;
 
-        // No GPU on this machine: give the panel slot back rather than pin a
-        // permanent "N/A" there. The card stays and says so explicitly.
-        const unavailable = gpus.length === 0;
+        // Nothing the panel's one slot could ever show: no GPU at all, or only
+        // devices whose driver never publishes utilisation (nouveau, or NVIDIA
+        // without nvidia-smi). Give the slot back rather than pin a permanent
+        // "N/A" there; the card stays and says which driver is the limit.
+        // Both conditions are static, so this cannot flicker against the
+        // missing first delta of an idle-residency GPU.
+        const unavailable = !gpus.some(gpu => gpu.usageSupported);
         if (unavailable !== this._gpuUnavailable) {
             this._gpuUnavailable = unavailable;
             this._gpuBox.container.visible =

@@ -13,10 +13,16 @@ import Gtk from 'gi://Gtk';
 
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import { PANEL_METRICS, sanitizePanelOrder } from './panelMetrics.js';
+
 
 export default class SystemMonitorPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
+        // The reorder rows below keep reading this object after
+        // fillPreferencesWindow() returns; anchoring it to the window ties its
+        // lifetime to theirs instead of to this call's scope.
+        window._settings = settings;
 
         window.set_default_size(780, 780);
 
@@ -42,9 +48,9 @@ export default class SystemMonitorPreferences extends ExtensionPreferences {
 
         const refreshRow = new Adw.SpinRow({
             title: 'Refresh Interval',
-            subtitle: 'How often to update metrics automatically (5–300 seconds)',
+            subtitle: 'How often to update metrics automatically (2–300 seconds)',
             adjustment: new Gtk.Adjustment({
-                lower: 5,
+                lower: 2,
                 upper: 300,
                 step_increment: 1,
                 page_increment: 10,
@@ -208,6 +214,115 @@ export default class SystemMonitorPreferences extends ExtensionPreferences {
             Gio.SettingsBindFlags.DEFAULT
         );
         visGroup.add(netRow);
+
+        // Keyed by metric id so the reorder rows below can mirror each
+        // metric's visibility without re-reading GSettings.
+        const panelSwitches = new Map([
+            ['cpu', cpuRow],
+            ['gpu', gpuRow],
+            ['memory', memRow],
+            ['disk', diskRow],
+            ['temperature', tempRow],
+            ['network', netRow],
+        ]);
+
+        // ── Panel Order Group ──
+        const orderGroup = new Adw.PreferencesGroup({
+            title: 'Panel Order',
+            description: 'Arrange the metrics inside the indicator. ' +
+                'The top of this list is the leftmost item in the panel.',
+        });
+        page.add(orderGroup);
+
+        // A list box of the group's own rather than rows added straight to it:
+        // Gtk.ListBox.insert() moves an existing row to a new position, so the
+        // arrows carry each row — and the keyboard focus sitting on it —
+        // instead of tearing the list down and rebuilding it under the user.
+        const orderList = new Gtk.ListBox({
+            selection_mode: Gtk.SelectionMode.NONE,
+        });
+        orderList.add_css_class('boxed-list');
+        orderGroup.add(orderList);
+
+        const order = sanitizePanelOrder(settings.get_strv('panel-order'));
+        const orderRows = new Map();
+
+        // Only the ends of the list change what is possible, so sensitivity is
+        // the one thing a move has to recompute.
+        const updateArrows = () => {
+            order.forEach((id, index) => {
+                const {up, down} = orderRows.get(id);
+                up.sensitive = index > 0;
+                down.sensitive = index < order.length - 1;
+            });
+        };
+
+        const moveMetric = (id, delta) => {
+            const from = order.indexOf(id);
+            const to = from + delta;
+            if (to < 0 || to >= order.length)
+                return;
+
+            order.splice(from, 1);
+            order.splice(to, 0, id);
+
+            const {row, up, down} = orderRows.get(id);
+            orderList.remove(row);
+            orderList.insert(row, to);
+
+            settings.set_strv('panel-order', order);
+            updateArrows();
+
+            // Unparenting the row drops the focus the click or keypress left
+            // on its arrow. Hand it straight back — to the opposite arrow when
+            // the move landed at an end — so a metric can be walked across the
+            // panel with repeated presses.
+            const pressed = delta < 0 ? up : down;
+            const focused = pressed.sensitive ? pressed : (delta < 0 ? down : up);
+            focused.grab_focus();
+        };
+
+        for (const id of order) {
+            const metric = PANEL_METRICS.find(m => m.id === id);
+            const row = new Adw.ActionRow({title: metric.title});
+
+            const arrows = new Gtk.Box({
+                spacing: 6,
+                valign: Gtk.Align.CENTER,
+            });
+
+            const up = new Gtk.Button({
+                icon_name: 'go-up-symbolic',
+                tooltip_text: `Move ${metric.title} left in the panel`,
+            });
+            up.add_css_class('flat');
+            up.connect('clicked', () => moveMetric(id, -1));
+            arrows.append(up);
+
+            const down = new Gtk.Button({
+                icon_name: 'go-down-symbolic',
+                tooltip_text: `Move ${metric.title} right in the panel`,
+            });
+            down.add_css_class('flat');
+            down.connect('clicked', () => moveMetric(id, 1));
+            arrows.append(down);
+
+            row.add_suffix(arrows);
+            orderList.append(row);
+
+            orderRows.set(id, {row, up, down});
+
+            // A metric switched off keeps its place in the order; saying so
+            // here stops the list from looking out of step with the panel.
+            const switchRow = panelSwitches.get(id);
+            const syncSubtitle = () => {
+                row.subtitle = switchRow.active ? '' : 'Hidden in the panel';
+            };
+            syncSubtitle();
+            switchRow.connect('notify::active', syncSubtitle);
+        }
+
+        updateArrows();
 
         // ── Dropdown Menu Cards Group ──
         const cardGroup = new Adw.PreferencesGroup({

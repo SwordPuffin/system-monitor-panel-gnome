@@ -26,14 +26,16 @@ A GNOME Shell extension that shows **CPU usage, memory usage, disk usage, networ
 
 ## Features
 
-- **At-a-glance panel indicators** for CPU, memory, disk, network, and temperature, with color-coded values (normal / warning / critical).
+- **At-a-glance panel indicators** for CPU, GPU, memory, disk, network, and temperature, with color-coded values (normal / warning / critical), in whatever left-to-right order you arrange them.
 - **Detailed dropdown dashboard** with cards for each metric:
   - **CPU** — overall usage plus a per-core usage grid.
+  - **GPU** — one entry per card, badged `iGPU`/`dGPU`, with usage, VRAM, clock and temperature wherever the driver reports them.
   - **Memory** — used/available/free/cached/buffers breakdown and swap usage.
   - **Disk** — combined usage plus a per-filesystem breakdown, with removable drives optionally included and badged `EXT`.
   - **Network** — live download/upload speeds and cumulative totals since boot.
   - **Temperature** — readings from the significant hardware sensors (CPU, GPU, chipset, motherboard, drives, Wi-Fi), one per component, with the CPU package sensor preferred for the headline value.
-- **Configurable refresh interval** (1–300 seconds).
+- **Configurable refresh interval** (2–300 seconds).
+- **Reorderable panel items** — arrange the metrics left to right however you like.
 - **Celsius or Fahrenheit** temperature display.
 - **Bytes or bits** network speed display (MB/s or Mbps).
 - **Configurable panel position** — either end of the left or right panel box.
@@ -51,6 +53,17 @@ A GNOME Shell extension that shows **CPU usage, memory usage, disk usage, networ
 - `glib-compile-schemas` (ships with GLib / `glib2-devel`), used to compile the settings schema
 
 Temperature and disk readings come from `/sys/class/thermal`, `/sys/class/hwmon`, and `/proc/mounts`. Machines that expose no readable sensor show `N/A` rather than failing.
+
+GPU metrics come from whatever the loaded driver publishes, which differs by vendor:
+
+| Driver               | Usage                | VRAM | Clock | Temperature |
+| -------------------- | -------------------- | ---- | ----- | ----------- |
+| `amdgpu` / `radeon`  | yes                  | yes  | yes   | yes         |
+| `i915` / `xe`        | yes (idle residency) | —    | yes   | discrete cards only |
+| `nvidia` proprietary | yes, via `nvidia-smi`| yes  | yes   | yes         |
+| `nouveau`            | —                    | —    | —     | yes         |
+
+Utilization is the one metric with no shared kernel interface. `nouveau` publishes none at all, and the proprietary NVIDIA driver only answers through `nvidia-smi`, so the GPU card names the driver standing in the way instead of showing a bare `N/A`. Intel integrated graphics have no temperature sensor of their own — their die shares the CPU package sensor.
 
 ## Install
 
@@ -90,11 +103,13 @@ assigns version numbers itself.
 
 | Setting                                                        | Default   | Description                                   |
 | -------------------------------------------------------------- | --------- | --------------------------------------------- |
-| `refresh-interval`                                             | `30`      | Seconds between updates (1–300)               |
+| `refresh-interval`                                             | `30`      | Seconds between updates (2–300)               |
 | `temperature-unit`                                             | `celsius` | `celsius` or `fahrenheit`                     |
 | `network-unit`                                                 | `bytes`   | `bytes` (MB/s) or `bits` (Mbps)               |
 | `panel-position`                                               | `right`   | `far-left`, `left`, `right`, or `far-right`   |
+| `panel-order`                                                  | `cpu`, `gpu`, `memory`, `disk`, `temperature`, `network` | Left-to-right order of the panel indicators |
 | `show-cpu` / `-memory` / `-disk` / `-temperature` / `-network` | on        | Panel indicator for each metric               |
+| `show-gpu` / `show-gpu-card`                                   | off       | GPU indicator and card (hidden when no GPU reports usage) |
 | `show-*-card`                                                  | on        | Dropdown card for each metric                 |
 | `show-external-disks`                                          | off       | Include removable/USB drives in the disk card |
 | `show-icons`                                                   | on        | Icons in the panel                            |
@@ -107,6 +122,7 @@ Settings apply immediately; no reload is needed.
 | ------------------------------------ | ------------------------------------------------------- |
 | [src/extension.js](src/extension.js) | Panel indicators, dropdown dashboard, metric collection |
 | [src/prefs.js](src/prefs.js)         | Preferences window                                      |
+| [src/panelMetrics.js](src/panelMetrics.js) | Panel metric ids and order, shared by both of the above |
 | [src/icons/](src/icons/)             | Symbolic panel icons                                    |
 
 ## License
@@ -124,4 +140,4 @@ The extension runs inside the GNOME Shell compositor process, so everything it d
 - **Static metadata is cached.** Sensor paths are discovered once; mount points and each device's removable flag are cached and invalidated by `GioUnix.MountMonitor`. Only the values themselves are re-read on each refresh.
 - **Nothing is collected for pixels that will not be drawn.** A metric is read only when its panel label is visible, or its card is visible and the dropdown is actually open. Dropdown rows are reused across refreshes rather than rebuilt.
 
-Together these keep a short refresh interval (1–5 seconds) about as cheap as the 30-second default.
+Together these keep a short refresh interval (2–5 seconds) about as cheap as the 30-second default: a sweep of every metric costs roughly 2.6 ms of CPU, or about 0.26% of one core at the 2-second floor.

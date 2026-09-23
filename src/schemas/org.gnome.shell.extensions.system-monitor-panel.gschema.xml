@@ -5,9 +5,9 @@
 
     <key name="refresh-interval" type="i">
       <default>30</default>
-      <range min="5" max="300"/>
+      <range min="2" max="300"/>
       <summary>Refresh interval</summary>
-      <description>How often to refresh system metrics, in seconds (5–300).</description>
+      <description>How often to refresh system metrics, in seconds (2–300).</description>
     </key>
 
     <key name="temperature-unit" type="s">
@@ -20,6 +20,17 @@
       <default>'bytes'</default>
       <summary>Network speed unit</summary>
       <description>Display network speed in "bytes" (KB/s, MB/s) or "bits" (kbps, Mbps).</description>
+    </key>
+
+    <key name="panel-order" type="as">
+      <default>['cpu','gpu','memory','disk','temperature','network']</default>
+      <summary>Panel metric order</summary>
+      <description>
+        Left-to-right order of the metrics inside the indicator. Valid ids are
+        "cpu", "gpu", "memory", "disk", "temperature" and "network"; unknown
+        ids are ignored and any that are missing are appended in their default
+        order. Hidden metrics keep their place but are not drawn.
+      </description>
     </key>
 
     <key name="panel-position" type="s">
