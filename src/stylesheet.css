@@ -30,10 +30,6 @@
 }
 
 /* Color-coded panel labels based on status */
-.smp-label-normal {
-  color: #e0e0e0;
-}
-
 .smp-label-warning {
   color: #f8e45c; /* Yellow */
 }
@@ -89,7 +85,6 @@
 .smp-card-title {
   font-size: 11.5px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 .smp-card-value {
@@ -101,9 +96,9 @@
 .smp-section-subtitle {
   font-size: 9px;
   font-weight: bold;
-  color: #8a8a8a;
   padding-top: 4px;
   padding-bottom: 1px;
+  box-shadow: inset 0 -1px rgba(0, 0, 0, 0.85);
 }
 
 /* Accent Colors for Sections */
@@ -185,7 +180,6 @@
 
 .smp-core-label {
   font-size: 10px;
-  color: #9a9a9a;
   width: 42px;
 }
 
@@ -204,7 +198,6 @@
 .smp-core-value {
   font-size: 10px;
   font-weight: bold;
-  color: #eeeeee;
   width: 30px;
   text-align: right;
 }
@@ -226,7 +219,6 @@
 
 .smp-gpu-name {
   font-size: 10.5px;
-  color: #eeeeee;
 }
 
 /* Marks a GPU as integrated (iGPU) or dedicated (dGPU) */
@@ -242,7 +234,6 @@
 .smp-gpu-percent {
   font-size: 10.5px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 /* Stands in for the usage bar when the driver reports no utilisation */
@@ -261,13 +252,11 @@
 
 .smp-detail-title {
   font-size: 10.5px;
-  color: #9a9a9a;
 }
 
 .smp-detail-value {
   font-size: 10.5px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 /* Network current-speed values (slightly larger, accented) */
@@ -291,13 +280,11 @@
 
 .smp-swap-title {
   font-size: 10px;
-  color: #9a9a9a;
 }
 
 .smp-swap-value {
   font-size: 10px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 .smp-swap-bar-bg {
@@ -335,7 +322,6 @@
 
 .smp-disk-name {
   font-size: 10.5px;
-  color: #eeeeee;
 }
 
 /* Marks a removable/USB drive in the filesystem list */
@@ -351,7 +337,6 @@
 .smp-disk-percent {
   font-size: 10.5px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 .smp-disk-bar-bg {
@@ -368,7 +353,6 @@
 
 .smp-disk-detail {
   font-size: 9.5px;
-  color: #9a9a9a;
 }
 
 /* --- Temperature Sensors List --- */
@@ -384,13 +368,11 @@
 
 .smp-sensor-name {
   font-size: 10.5px;
-  color: #9a9a9a;
 }
 
 .smp-sensor-value {
   font-size: 10.5px;
   font-weight: bold;
-  color: #eeeeee;
 }
 
 .smp-no-sensors {
@@ -452,11 +434,9 @@
 
 .smp-footer-btn-icon {
   icon-size: 14px;
-  color: #eeeeee;
 }
 
 .smp-footer-btn-label {
   font-size: 11px;
   font-weight: bold;
-  color: #eeeeee;
 }
